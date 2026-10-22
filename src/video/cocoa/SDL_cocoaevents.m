@@ -25,6 +25,68 @@
 #include "SDL_cocoavideo.h"
 #include "../../events/SDL_events_c.h"
 
+#ifdef SDL_COCOA_FOCUSDBG
+#include <stdarg.h>
+#include <stdio.h>
+
+bool Cocoa_FocusFixEnabled(void)
+{
+    const char *v = SDL_getenv("SDL_COCOA_FOCUSFIX");
+    return !(v && *v == '0');
+}
+
+void Cocoa_FocusDbg(bool stack, const char *fmt, ...)
+{
+    char buf[512];
+    va_list ap;
+    NSWindow *key = [NSApp keyWindow];
+    NSRunningApplication *front = [[NSWorkspace sharedWorkspace] frontmostApplication];
+
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "FOCUSDBG %llu %s | active=%d key=%p front=%s\n",
+            (unsigned long long)SDL_GetTicks(), buf, [NSApp isActive] ? 1 : 0,
+            (__bridge void *)key, front ? [[front localizedName] UTF8String] : "?");
+    if (stack) {
+        NSArray<NSString *> *syms = [NSThread callStackSymbols];
+        NSUInteger n = SDL_min([syms count], (NSUInteger)40);
+        for (NSUInteger i = 1; i < n; ++i) {
+            fprintf(stderr, "FOCUSDBG   %s\n", [syms[i] UTF8String]);
+        }
+    }
+    fflush(stderr);
+}
+
+static void Cocoa_FocusDbgRegister(void)
+{
+    NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+    NSNotificationCenter *wnc = [[NSWorkspace sharedWorkspace] notificationCenter];
+
+    fprintf(stderr, "FOCUSDBG tracing build loaded, fix %s (SDL_COCOA_FOCUSFIX=0 disables)\n",
+            Cocoa_FocusFixEnabled() ? "ON" : "OFF");
+    [nc addObserverForName:NSApplicationWillBecomeActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+        FOCUSDBG_STACK("app willBecomeActive");
+    }];
+    [nc addObserverForName:NSApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+        FOCUSDBG("app didBecomeActive");
+    }];
+    [nc addObserverForName:NSApplicationWillResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+        FOCUSDBG("app willResignActive");
+    }];
+    [nc addObserverForName:NSApplicationDidResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+        FOCUSDBG("app didResignActive");
+    }];
+    [wnc addObserverForName:NSWorkspaceDidActivateApplicationNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+        NSRunningApplication *app = n.userInfo[NSWorkspaceApplicationKey];
+        FOCUSDBG("workspace activated %s", app ? [[app localizedName] UTF8String] : "?");
+    }];
+    [wnc addObserverForName:NSWorkspaceActiveSpaceDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+        FOCUSDBG("workspace activeSpaceDidChange");
+    }];
+}
+#endif // SDL_COCOA_FOCUSDBG
+
 static SDL_Window *FindSDLWindowForNSWindow(NSWindow *win)
 {
     SDL_Window *sdlwindow = NULL;
@@ -147,6 +209,9 @@ static void Cocoa_DispatchEvent(NSEvent *theEvent)
         bool registerActivationHandlers = SDL_GetHintBoolean("SDL_MAC_REGISTER_ACTIVATION_HANDLERS", true);
 
         seenFirstActivate = NO;
+#ifdef SDL_COCOA_FOCUSDBG
+        Cocoa_FocusDbgRegister();
+#endif
 
         if (registerActivationHandlers) {
             [center addObserver:self
@@ -224,6 +289,7 @@ static void Cocoa_DispatchEvent(NSEvent *theEvent)
             if (![window isOnActiveSpace]) {
                 continue;
             }
+            FOCUSDBG("windowWillClose hack makeKeyAndOrderFront %p", (__bridge void *)window);
             [window makeKeyAndOrderFront:self];
             return;
         }
@@ -236,6 +302,7 @@ static void Cocoa_DispatchEvent(NSEvent *theEvent)
     for (NSNumber *num in [NSWindow windowNumbersWithOptions:0]) {
         NSWindow *window = [NSApp windowWithWindowNumber:[num integerValue]];
         if (window && window != win && [window canBecomeKeyWindow]) {
+            FOCUSDBG("windowWillClose hack2 makeKeyAndOrderFront %p", (__bridge void *)window);
             [window makeKeyAndOrderFront:self];
             return;
         }
@@ -269,6 +336,7 @@ static void Cocoa_DispatchEvent(NSEvent *theEvent)
             SDL_Window *fullscreen_window = device->displays[i]->fullscreen_window;
             if (fullscreen_window) {
                 if (fullscreen_window->flags & SDL_WINDOW_MINIMIZED) {
+                    FOCUSDBG("focusSomeWindow SDL_RestoreWindow");
                     SDL_RestoreWindow(fullscreen_window);
                 }
                 return;
@@ -331,6 +399,7 @@ static void Cocoa_DispatchEvent(NSEvent *theEvent)
             break;
         }
         SDL_Delay(300); // !!! FIXME: this isn't right.
+        FOCUSDBG("applicationDidFinishLaunching activateIgnoringOtherApps");
         [NSApp activateIgnoringOtherApps:YES];
     }
 

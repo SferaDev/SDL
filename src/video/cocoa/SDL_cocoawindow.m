@@ -474,8 +474,10 @@ static void Cocoa_ToggleFullscreenSpaceMenuVisibility(SDL_Window *window)
         // 'Auto' sets the menu to visible if fullscreen wasn't explicitly entered via SDL_SetWindowFullscreen().
         if ((menu_visibility_hint == COCOA_MENU_VISIBILITY_AUTO && !data.fullscreen_space_requested) ||
             menu_visibility_hint == COCOA_MENU_VISIBILITY_ALWAYS) {
+            FOCUSDBG("ToggleFullscreenSpaceMenuVisibility setMenuBarVisible:YES");
             [NSMenu setMenuBarVisible:YES];
         } else {
+            FOCUSDBG("ToggleFullscreenSpaceMenuVisibility setMenuBarVisible:NO");
             [NSMenu setMenuBarVisible:NO];
         }
     }
@@ -1317,6 +1319,8 @@ static NSCursor *Cocoa_GetDesiredCursor(void)
 {
     SDL_Window *window = _data.window;
 
+    FOCUSDBG_STACK("windowDidBecomeKey fsSpace=%d transition=%d pending=0x%x", isFullscreenSpace, inFullscreenTransition, (unsigned)pendingWindowOperation);
+
     // We're going to get keyboard events, since we're key.
     // This needs to be done before restoring the relative mouse mode.
     Cocoa_SetKeyboardFocus(window->keyboard_focus ? window->keyboard_focus : window, true);
@@ -1340,6 +1344,10 @@ static NSCursor *Cocoa_GetDesiredCursor(void)
 
     if (isFullscreenSpace && !window->fullscreen_exclusive) {
         Cocoa_ToggleFullscreenSpaceMenuVisibility(window);
+    } else if (Cocoa_FocusFixEnabled() && ![NSMenu menuBarVisible]) {
+        // windowDidResignKey skips restoring the menu bar if the app was deactivated.
+        FOCUSDBG("windowDidBecomeKey restoring menu bar");
+        [NSMenu setMenuBarVisible:YES];
     }
     {
         const unsigned int newflags = [NSEvent modifierFlags] & NSEventModifierFlagCapsLock;
@@ -1358,6 +1366,8 @@ static NSCursor *Cocoa_GetDesiredCursor(void)
 
 - (void)windowDidResignKey:(NSNotification *)aNotification
 {
+    FOCUSDBG("windowDidResignKey fsSpace=%d transition=%d pending=0x%x", isFullscreenSpace, inFullscreenTransition, (unsigned)pendingWindowOperation);
+
     // Some other window will get mouse events, since we're not key.
     if (SDL_GetMouseFocus() == _data.window) {
         SDL_SetMouseFocus(NULL);
@@ -1369,7 +1379,23 @@ static NSCursor *Cocoa_GetDesiredCursor(void)
     }
 
     if (isFullscreenSpace) {
-        [NSMenu setMenuBarVisible:YES];
+        if (Cocoa_FocusFixEnabled()) {
+            /* Changing the menu bar visibility while the app is deactivating can make macOS
+             * reactivate it, so wait until that is done and only restore it for our own windows,
+             * unless key moved to another of them in a fullscreen Space. */
+            NSWindow *nswindow = _data.nswindow;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                FOCUSDBG("windowDidResignKey deferred: active=%d key=%d", [NSApp isActive], [nswindow isKeyWindow]);
+                NSWindow *key = [NSApp keyWindow];
+                if ([NSApp isActive] && ![nswindow isKeyWindow] &&
+                    !(key && ([key styleMask] & NSWindowStyleMaskFullScreen))) {
+                    [NSMenu setMenuBarVisible:YES];
+                }
+            });
+        } else {
+            FOCUSDBG("windowDidResignKey setMenuBarVisible:YES");
+            [NSMenu setMenuBarVisible:YES];
+        }
     }
 }
 
@@ -1448,6 +1474,8 @@ static NSCursor *Cocoa_GetDesiredCursor(void)
 - (void)windowDidEnterFullScreen:(NSNotification *)aNotification
 {
     SDL_Window *window = _data.window;
+
+    FOCUSDBG("windowDidEnterFullScreen pending=0x%x", (unsigned)pendingWindowOperation);
 
     inFullscreenTransition = NO;
     isFullscreenSpace = YES;
@@ -2760,6 +2788,7 @@ void Cocoa_ShowWindow(SDL_VideoDevice *_this, SDL_Window *window)
             }
             if (!SDL_WINDOW_IS_POPUP(window)) {
                 if (bActivate) {
+                    FOCUSDBG("Cocoa_ShowWindow makeKeyAndOrderFront");
                     [nswindow makeKeyAndOrderFront:nil];
                 } else {
                     // Order this window below the key window if we're not activating it
@@ -2821,6 +2850,7 @@ void Cocoa_HideWindow(SDL_VideoDevice *_this, SDL_Window *window)
 
             if (new_focus) {
                 NSWindow *newkey = ((__bridge SDL_CocoaWindowData *)window->internal).nswindow;
+                FOCUSDBG("Cocoa_HideWindow parent makeKeyAndOrderFront");
                 [newkey makeKeyAndOrderFront:nil];
             }
         }
@@ -2845,6 +2875,7 @@ void Cocoa_RaiseWindow(SDL_VideoDevice *_this, SDL_Window *window)
             }
             if (!SDL_WINDOW_IS_POPUP(window)) {
                 if (bActivate) {
+                    FOCUSDBG_STACK("Cocoa_RaiseWindow activateIgnoringOtherApps");
                     [NSApp activateIgnoringOtherApps:YES];
                     [nswindow makeKeyAndOrderFront:nil];
                 } else {
@@ -3095,6 +3126,7 @@ SDL_FullscreenResult Cocoa_SetWindowFullscreen(SDL_VideoDevice *_this, SDL_Windo
 
         if ([nswindow isVisible] || fullscreen) {
             [data.listener pauseVisibleObservation];
+            FOCUSDBG_STACK("Cocoa_SetWindowFullscreen makeKeyAndOrderFront fullscreen=%d", (int)fullscreen);
             [nswindow makeKeyAndOrderFront:nil];
             [data.listener resumeVisibleObservation];
         }
@@ -3222,6 +3254,7 @@ bool Cocoa_SetWindowMouseGrab(SDL_VideoDevice *_this, SDL_Window *window, bool g
             } else {
                 [data.nswindow setLevel:kCGNormalWindowLevel];
             }
+            FOCUSDBG("Cocoa_SetWindowMouseGrab grabbed=%d level=%ld", grabbed, (long)[data.nswindow level]);
         }
     }
 

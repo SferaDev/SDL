@@ -69,4 +69,16 @@ typedef enum
 extern SDL_SystemTheme Cocoa_GetSystemTheme(void);
 extern NSImage *Cocoa_CreateImage(SDL_Surface *surface);
 
+// FOCUSDBG: temporary focus tracing, compiled in only with -DSDL_COCOA_FOCUSDBG
+#ifdef SDL_COCOA_FOCUSDBG
+extern void Cocoa_FocusDbg(bool stack, const char *fmt, ...);
+extern bool Cocoa_FocusFixEnabled(void);
+#define FOCUSDBG(...)       Cocoa_FocusDbg(false, __VA_ARGS__)
+#define FOCUSDBG_STACK(...) Cocoa_FocusDbg(true, __VA_ARGS__)
+#else
+#define FOCUSDBG(...)
+#define FOCUSDBG_STACK(...)
+#define Cocoa_FocusFixEnabled() true
+#endif
+
 #endif // SDL_cocoavideo_h_

@@ -326,6 +326,7 @@ static bool Cocoa_WarpMouseGlobal(float x, float y)
     }
     point = CGPointMake(x, y);
 
+    FOCUSDBG("WarpMouseGlobal %g,%g", x, y);
     Cocoa_HandleMouseWarp(point.x, point.y);
 
     CGWarpMouseCursorPosition(point);
